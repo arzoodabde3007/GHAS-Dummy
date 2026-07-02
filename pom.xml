@@ -167,7 +167,7 @@
         <dependency>
             <groupId>com.thoughtworks.xstream</groupId>
             <artifactId>xstream</artifactId>
-            <version>1.4.17</version>
+            <version>1.4.21</version>
         </dependency>
 
         <!-- CVE-2021-43797 (Netty — HTTP request smuggling via whitespace mishandling) -->
