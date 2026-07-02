@@ -153,19 +153,28 @@ All `toEntity()` mapper methods must include `@BeanMapping(builder = @Builder(di
 
 ## GHAS Vulnerability Management
 
+### Configuration Files
+
+Essential configuration for Workflow 1 and Workflow 2:
+
+**`.env` (repo root)** — Jira and GitHub credentials (added to `.gitignore`):
+```
+JIRA_BASE_URL=https://epam-team-v6ourv5o.atlassian.net
+JIRA_EMAIL=arzoo_dabde@epam.com
+JIRA_API_TOKEN=<your-atlassian-api-token>
+GITHUB_OWNER=arzoodabde3007
+GITHUB_REPO=GHAS-Dummy
+GITHUB_TOKEN=<your-github-pat>
+```
+
 ### Prerequisites
 
 **GitHub CLI** — run `gh auth login` once. `fetch_alerts.sh` uses keyring auth — no token file needed.
 
 **Jira API** — All Jira operations use `jira_ticket_manager.py` (pure Python, no MCP). Setup is required once:
 1. `pip install requests python-dotenv pyyaml`
-2. Create `.env` at repo root:
-   ```
-   JIRA_BASE_URL=https://tanishqshrivas.atlassian.net
-   JIRA_EMAIL=<your-atlassian-account-email>
-   JIRA_API_TOKEN=<your-atlassian-api-token>
-   ```
-3. Verify: `python .github/scripts/jira_ticket_manager.py search --project HMS --labels GHAS`
+2. Fill in `.env` at repo root (see **Configuration Files** section above)
+3. Verify: `python .github/scripts/jira_ticket_manager.py search --project SCRUM --labels GHAS`
 
 > ⚠️ The script tries `JIRA_URL` first, then falls back to `JIRA_BASE_URL`. Use `JIRA_BASE_URL` in `.env` to avoid silent failures.
 
@@ -183,8 +192,9 @@ All `toEntity()` mapper methods must include `@BeanMapping(builder = @Builder(di
 ### Jira Configuration
 | Setting | Value |
 |---|---|
-| Jira Site URL | `https://tanishqshrivas.atlassian.net` |
-| Jira Project Key | `HMS` |
+| Jira Site URL | `https://epam-team-v6ourv5o.atlassian.net` |
+| Jira Project Key | `SCRUM` |
+| Jira Email | `arzoo_dabde@epam.com` |
 
 ### Multi-Agent Orchestration
 A two-workflow, multi-agent system lives in `.github/agents/` for automated Dependabot vulnerability remediation.

@@ -23,10 +23,10 @@ workflow_type: w2
 # ENVIRONMENT — identifies your project and local machine
 # --------------------------------------------------------------
 environment:
-  repo_owner: tanishq-sh17          # [REQUIRED] GitHub owner (org or user)
-  repo_name: HMS                    # [REQUIRED] GitHub repository name
+  repo_owner: arzoodabde3007        # [REQUIRED] GitHub owner (org or user)
+  repo_name: GHAS-Dummy            # [REQUIRED] GitHub repository name
   service_name: HMS                 # [REQUIRED] Display name used in Jira tickets and reports
-  repo_root: C:\Users\TanishqShrivas\DummyProj\GHAS-dummy-projects\HMS  # [REQUIRED] Absolute path to repo root on this machine
+  repo_root: C:\Users\ArzooDabde\Documents\GHAS-Task\HMS  # [REQUIRED] Absolute path to repo root on this machine
 
 
 # --------------------------------------------------------------
@@ -46,8 +46,8 @@ tools:
 # JIRA — Workflow 2 ticket interaction settings
 # --------------------------------------------------------------
 jira:
-  site_url: https://tanishqshrivas.atlassian.net  # [REQUIRED] Your Atlassian site URL (no trailing slash)
-  project_key: HMS                  # [REQUIRED] Jira project key
+  site_url: https://epam-team-v6ourv5o.atlassian.net  # [REQUIRED] Your Atlassian site URL (no trailing slash)
+  project_key: SCRUM                # [REQUIRED] Jira project key
 
   # Labels used to search for open tickets when no Jira ID is provided.
   labels: [GHAS]
