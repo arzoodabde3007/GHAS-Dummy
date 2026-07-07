@@ -1,11 +1,11 @@
 ---
-description: Jira Manager - creates or closes Jira tickets. Dual-mode. Optimized.
+description: Workflow 1 - Jira Manager - creates or closes Jira tickets. Dual-mode. Optimized.
 model: claude-sonnet-4.5
 tools:
   - powershell
 ---
 
-# Jira Manager
+# Workflow 1 — Jira Manager
 
 **Purpose:** Upsert Jira tickets (create/close mode)  
 **Modes:** create | close

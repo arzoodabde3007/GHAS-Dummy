@@ -1,11 +1,11 @@
 ---
-description: Fetcher - runs fetch_alerts.sh to pull all GitHub alerts. Optimized.
+description: Workflow 1 - Fetcher - runs fetch_alerts.sh to pull all GitHub alerts. Optimized.
 model: claude-haiku-4.5
 tools:
   - powershell
 ---
 
-# Fetcher
+# Workflow 1 — Fetcher
 
 **Purpose:** Fetch all GitHub alerts (Dependabot, Code Scanning, Secret Scanning)  
 **Output:** Consolidated CSV file with all alerts

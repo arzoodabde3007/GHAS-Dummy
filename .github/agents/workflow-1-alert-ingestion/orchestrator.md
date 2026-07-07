@@ -1,12 +1,12 @@
 ---
-description: Orchestrator - fetches GHAS alerts and creates Jira tickets. Optimized.
+description: Workflow 1 - Orchestrator - fetches GHAS alerts and creates Jira tickets. Optimized.
 model: claude-haiku-4.5
 tools:
   - powershell
   - task
 ---
 
-# Alert Ingestion Orchestrator
+# Workflow 1 — Orchestrator (Alert Ingestion)
 
 **Scope:** Coordinate alert fetching and Jira ticket creation  
 **Sub-agents:** @fetcher, @jira-manager
