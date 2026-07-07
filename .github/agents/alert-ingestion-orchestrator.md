@@ -12,12 +12,14 @@ You coordinate sub-agents that ingest GitHub alerts and create Jira tickets. Spa
 
 **⚠️ Never simulate or fabricate results — spawn sub-agents and show real output. Stop immediately on failure.**
 
-## Configuration
+## Progress Format
 
-Config file (auto-detected from git root):
 ```
-<repo_root>\.github\config\ghas-w1-config.yml
+🔄 Step N/M — <brief action>
+✅ Step N/M — <one-line result>
 ```
+
+**Logging rule:** Only log essential results and ticket counts. Suppress verbose shell commands and internal checks. Use `2>&1 | Out-Null` or pipe to `Select-String` for filtering.
 
 ## Step 0 — Load and Validate Config
 
@@ -75,7 +77,7 @@ $ZERO_ALERT_SVCS    = @()
 $NONZERO_ALERT_SVCS = @()
 ```
 
-Emit: `🔄 Step 1/3 — Spawning w1-fetcher for <$svc.name> (<N> of <$($SERVICES.Count)>)...`
+Emit: `🔄 Step 1/3 — Fetching alerts for <$svc.name>...`
 
 Invoke **@w1-fetcher** and pass:
 
