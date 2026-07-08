@@ -169,129 +169,167 @@ All tests are service-layer unit tests using Mockito (`@ExtendWith(MockitoExtens
 1. `pip install requests python-dotenv pyyaml` (one-time)
 2. Fill in `.env` at repo root:
    ```
-   JIRA_BASE_URL=https://tanishqshrivas.atlassian.net   # also accepted as JIRA_URL
-   JIRA_EMAIL=<your-atlassian-account-email>
+   JIRA_BASE_URL=https://epam-team-v6ourv5o.atlassian.net
+   JIRA_EMAIL=arzoo_dabde@epam.com
    JIRA_API_TOKEN=<your-atlassian-api-token>
+   GITHUB_OWNER=arzoodabde3007
+   GITHUB_REPO=GHAS-Dummy
+   GITHUB_TOKEN=<your-github-pat>
    ```
-3. Verify auth: `python .claude/scripts/jira_ticket_manager.py search --project HMS --labels GHAS`
+3. Verify auth: `python .github/scripts/jira_ticket_manager.py search --project SCRUM --labels GHAS`
+
+> The script tries `JIRA_URL` first, then falls back to `JIRA_BASE_URL` — always use `JIRA_BASE_URL` in `.env`.
 
 **Python script operations (all Jira ops):**
 
 | Operation | Subcommand | Agents |
 |---|---|---|
-| Search tickets (JQL) | `jira_ticket_manager.py search --jql "..."` | w1-jira-manager, alert-ingestion-orchestrator |
-| Get issue details | `jira_ticket_manager.py get --ticket HMS-XX` | w2-verifier, vuln-resolver-orchestrator |
-| Apply transition | `jira_ticket_manager.py transition --ticket --name` | w2-reporter, alert-ingestion-orchestrator |
-| Post comment | `jira_ticket_manager.py comment --ticket --body-file` | w2-reporter |
-| Create ticket | `jira_ticket_manager.py create --project --service --csv` | w1-jira-manager |
-| Update description | `jira_ticket_manager.py update-description --ticket --service --csv` | w1-jira-manager |
+| Search tickets (JQL) | `jira_ticket_manager.py search --jql "..."` | jira-manager, W1 orchestrator |
+| Get issue details | `jira_ticket_manager.py get --ticket SCRUM-XX` | verifier, W2 orchestrator |
+| Apply transition | `jira_ticket_manager.py transition --ticket --name` | reporter, W1 orchestrator |
+| Post comment | `jira_ticket_manager.py comment --ticket --body-file` | reporter |
+| Create ticket | `jira_ticket_manager.py create --project --service --csv` | jira-manager |
+| Update description | `jira_ticket_manager.py update-description --ticket --service --csv` | jira-manager |
 
 ### Fixed Configuration (hardcoded in all agents — never ask the user)
 
 | Setting | Value |
 |---|---|
-| Repo | `tanishq-sh17/HMS` |
-| Jira Site URL | `https://tanishqshrivas.atlassian.net` |
-| Jira Project Key | `HMS` |
-| Repo root | `C:\Users\TanishqShrivas\DummyProj\GHAS-dummy-projects\HMS` |
+| GitHub Owner | `arzoodabde3007` |
+| GitHub Repo | `GHAS-Dummy` |
+| Jira Site URL | `https://epam-team-v6ourv5o.atlassian.net` |
+| Jira Project Key | `SCRUM` |
+| Repo root | `C:\Users\ArzooDabde\Documents\GHAS-Task\HMS` |
+
+### Configuration Files
+
+Config is split into two files validated at startup via `validate_config.py`:
+
+- **Workflow 1:** `.github/config/ghas-w1-config.yml` — alert fetch, Jira settings, services array
+- **Workflow 2:** `.github/config/ghas-w2-config.yml` — remediation pipeline, retry limits, branch naming
+
+Validate before running:
+```bash
+python .github/scripts/validate_config.py .github/config/ghas-w1-config.yml
+python .github/scripts/validate_config.py .github/config/ghas-w2-config.yml
+```
+
+Key `ghas-w2-config.yml` sections: `workflow2` (auto-approve flags, smoke check URL), `branch` (naming templates), `dependency_groups` (sibling version rules), `retry_limits` (default 3 each).
 
 ### Multi-Agent Orchestration
 
 A two-workflow, multi-agent system lives in `.github/agents/` (mirrored in `.claude/agents/`) for automated Dependabot vulnerability remediation.
 
 ```
-.claude/
-  agents/                             ← canonical agent definitions (used by Claude Code)
-    alert-ingestion-orchestrator.md
-    w1-fetcher.md
-    w1-sorter.md                      ← DEPRECATED: no longer invoked; service grouping done inline by orchestrator
-    w1-jira-manager.md
-    vuln-resolver-orchestrator.md
-    w2-context-builder.md
-    w2-planner.md                     ← change plan + proposed diff (replaces w2-rca)
-    w2-fixer.md
-    w2-validator.md
-    w2-verifier.md                    ← comprehensive verification before PR creation (runs before human review)
-    w2-reporter.md
-  scripts/                            ← scripts invoked by agents (mirrored from .github/scripts/)
-    fetch_alerts.sh                   ← active: gh CLI → timestamped CSV (all alert types)
-    jira_ticket_manager.py            ← Python script — handles ALL Jira operations
-    validate_config.py                ← validates ghas-w1-config.yml / ghas-w2-config.yml at startup
+.github/agents/
+  workflow-1-alert-ingestion/
+    orchestrator.md             ← entry point for Workflow 1
+    fetcher.md
+    jira-manager.md
+    README.md
+  workflow-2-vulnerability-resolver/
+    orchestrator.md             ← entry point for Workflow 2
+    context-builder.md
+    planner.md
+    fixer.md
+    validator.md
+    verifier.md
+    reporter.md
+    README.md
+  AGENT_MAP.md
 
-.github/agents/                       ← mirror of .claude/agents/ (kept in sync manually)
+.github/scripts/                ← scripts invoked by agents
+  fetch_alerts.sh               ← gh CLI → timestamped CSV (all alert types)
+  jira_ticket_manager.py        ← handles ALL Jira operations
+  validate_config.py            ← validates both config files at startup
+
+.claude/agents/                 ← identical mirror of .github/agents/ (loaded by Claude Code)
 ```
 
 **Two-folder setup:** `.github/agents/` is loaded by GitHub Copilot CLI; `.claude/agents/` is the identical mirror loaded by Claude Code. Keep them in sync when modifying agent definitions.
 
+**Model assignments:**
+
+| Model | Agents | Rationale |
+|---|---|---|
+| `claude-haiku-4.5` | Both orchestrators, fetcher, reporter | Pure coordination / templated ops |
+| `claude-sonnet-4.5` | jira-manager, context-builder, planner, fixer, validator, verifier | Complex reasoning required |
+
 ### Workflow 1 — Alert Ingestion
+
+Invoke: `@orchestrator` (in `workflow-1-alert-ingestion/`)
 
 Steps run in order; any failure stops the workflow.
 
-1. **`w1-fetcher`** (Sub-Agent 1) — runs once **per service** in a multi-service loop; services are loaded from the root-level `services` array in `ghas-w1-config.yml` as `{ name, github_repo }` objects. Runs `fetch_alerts.sh` via Git Bash using `gh` CLI; fetches Dependabot, Code Scanning, and Secret Scanning alerts; writes a timestamped CSV per service. If `ALERT_COUNT=0` the fetcher emits that count and exits successfully — it does **not** stop — the orchestrator queues those services for ticket-closure in Step 2b.
-2. **Orchestrator derives `SERVICE_NAMES` inline** — after all fetchers complete, `$SERVICE_NAMES = $NONZERO_ALERT_SVCS -join ','`. **`@w1-sorter` is no longer invoked as a sub-agent.**
-3. **`w1-jira-manager`** (Sub-Agent 2, active) — searches Jira via **`jira_ticket_manager.py search`** using a JQL query filtered by labels, service, status, and optionally `parent_jira`; if an active ticket exists (status in `skip_statuses`), compares CVEs and **updates its description in-place** via `update-description`; if no active ticket exists (or prior is Done/Testing/QA), creates a fresh consolidated ticket; updates CSV with Jira key + status
-4. **Step 2b (zero-alert closure)** — if any service returned `ALERT_COUNT=0`, orchestrator uses **`jira_ticket_manager.py search`** to find open tickets, then **`jira_ticket_manager.py transition --name Done`** to close them.
+1. **`fetcher`** (Sub-Agent 1) — runs once **per service** in a multi-service loop; services are loaded from the root-level `services` array in `ghas-w1-config.yml` as `{ name, github_repo }` objects. Runs `fetch_alerts.sh` via Git Bash using `gh` CLI; fetches Dependabot, Code Scanning, and Secret Scanning alerts; writes a timestamped CSV per service. If `ALERT_COUNT=0` the fetcher exits successfully — the orchestrator queues those services for ticket-closure.
+2. **Orchestrator derives `SERVICE_NAMES` inline** — after all fetchers complete, `$SERVICE_NAMES = $NONZERO_ALERT_SVCS -join ','`. `w1-sorter` has been removed.
+3. **`jira-manager`** (Sub-Agent 2) — searches Jira via JQL filtered by labels, service, and status; if an active ticket exists (status in `skip_statuses`), updates its description in-place; if no active ticket exists, creates a fresh consolidated ticket; updates CSV with Jira key + status.
+4. **Zero-alert closure** — if any service returned `ALERT_COUNT=0`, orchestrator finds open tickets and transitions them to Done.
 
-**Multi-service config** — add one entry per service under the root-level `services` key (not under `environment`):
+**Multi-service config** — add entries under the root-level `services` key (not under `environment`):
 ```yaml
 services:
-  - name: HMS               # display name used in Jira labels and CSV
-    github_repo: HMS        # GitHub repo name (may differ from service name)
+  - name: HMS
+    github_repo: HMS
   - name: BillingService
     github_repo: billing-svc
 ```
 `environment.service_name` is the single-service fallback used only when `services` is absent.
 
-> **Testing with multiple services in the same repo** — multiple service entries can share the same `github_repo`. Each gets its own fetcher run, CSV, and Jira ticket under a different service name. Alerts will be identical (same GitHub repo), but the full multi-service loop is exercised.
-
 **W1 Sub-agent reference:**
 
-| # | Sub-agent | Status | Jira tooling |
+| # | Sub-agent | Model | Jira tooling |
 |---|---|---|---|
-| 1 | `@w1-fetcher` | Active | — |
-| 2 | `@w1-jira-manager` | Active | Python `search`, `get`, `create`, `update-description` |
-| — | `@w1-sorter` | **Deprecated** — not invoked | — |
-
-**Sub-agent invocation pattern:** WF1 orchestrator loads config once in Step 0, then passes specific values to each sub-agent as explicit variables (`<PLACEHOLDER>` syntax).
-
-| Sub-agent | Variables passed by orchestrator |
-|---|---|
-| `@w1-fetcher` | `CONFIG_PATH`, `SERVICE_NAME` = `$svc.name`, `REPO_NAME` = `$svc.github_repo` (per-service — may differ from `environment.repo_name`), `REPO_ROOT`, `GIT_BASH`, `GH_CMD`, `PYTHON_CMD`, `FETCH_SCRIPT_UNIX`, `CSV_GLOB`, `REPO_OWNER` |
-| `@w1-jira-manager` | `CONFIG_PATH`, `CSV_PATH`, `SERVICE_NAMES`, `SKIP_STATUSES`, `PYTHON_CMD`, `JIRA_SCRIPT`, `JIRA_PROJECT`, `BASE_LABEL`, `CSV_GLOB`, `PARENT_JIRA`, `SEARCH_LABELS` |
+| 1 | `fetcher` | haiku-4.5 | — |
+| 2 | `jira-manager` | sonnet-4.5 | Python `search`, `get`, `create`, `update-description` |
 
 **Jira ticket title format:** `Address GHAS vulnerabilities for <SERVICE_NAME> [Critical-<N>, High-<N>, Medium-<N>, Low-<N>]`
 
 **CSV columns (0-indexed):** `service` | `type` | `ghsa_id` | `cve_id` | `title` | `severity` | `created` | `due` | `url` | `Application` | `nonCompliant` | `ageDays` | **`jira_key`** | **`jira_status`**
 
-**Jira ticket table columns** (configured via `jira.ticket_table_columns` in `ghas-w1-config.yml`): The `nonCompliant` column renders as **"Compliance Status"** in the ticket — CSV value `0` → "Compliant" (green), `1` → "Non-Compliant" (red, bold). Raw numbers are never shown.
+**Jira ticket table columns** (configured via `jira.ticket_table_columns` in `ghas-w1-config.yml`): The `nonCompliant` column renders as **"Compliance Status"** — CSV value `0` → "Compliant" (green), `1` → "Non-Compliant" (red, bold). Raw numbers are never shown.
 
 ### Workflow 2 — Vulnerability Resolver
 
-Only input needed: **Jira ticket ID** (e.g. `HMS-16`); everything else is fixed config. Four retry counters with human escalation (max attempts configurable via `retry_limits` in `ghas-w2-config.yml`, default 3).
+Invoke: `@orchestrator <JIRA_TICKET>` (in `workflow-2-vulnerability-resolver/`)
+
+Only input needed: **Jira ticket ID** (e.g. `SCRUM-16`); everything else is fixed config. Ensure the working tree is clean before running (`git status`).
 
 **W2 Sub-agent reference:**
 
-| # | Sub-agent | Step | Jira tooling |
-|---|---|---|---|
-| 1 | `@w2-context-builder` | Step 1 | — |
-| 2 | `@w2-planner` | Step 3 | — |
-| 3 | `@w2-fixer` | Step 5a (loop) | — |
-| 4 | `@w2-validator` | Step 5b (loop) | — |
-| 5 | `@w2-verifier` | Step 6 | Python `get` |
-| 6 | `@w2-reporter` | Step 9 | Python `comment`, `transition` |
+| # | Sub-agent | Step | Model | Jira tooling |
+|---|---|---|---|---|
+| 1 | `context-builder` | Step 1 | sonnet-4.5 | — |
+| 2 | `planner` | Step 3 | sonnet-4.5 | — |
+| 3 | `fixer` | Step 5a (loop) | sonnet-4.5 | — |
+| 4 | `validator` | Step 5b (loop) | sonnet-4.5 | — |
+| 5 | `verifier` | Step 6 | sonnet-4.5 | Python `get` |
+| 6 | `reporter` | Step 9 | haiku-4.5 | Python `comment`, `transition` |
 
-0. **Config validation + Jira ticket validation** — loads `ghas-w2-config.yml`, validates required fields; validates ticket ID matches project key and fetches labels via **`jira_ticket_manager.py get`** to confirm it belongs to the intended service; all sub-agent variables resolved here once; aborts on failure
-1. **`w2-context-builder`** (Sub-Agent 1) — fetches open alerts; discovers **all `pom.xml` files** in the project (excludes `target/`), reads each one; reads latest CSV for context; classifies each dependency as inline / property-backed / BOM-managed and records which file declares the version (`Declared in:` field in CONTEXT_MAP); audits sibling group consistency for `jjwt-*`, `log4j-*`, `jackson-*` across all pom files
-2. **Feature branch created** — aborts if working tree is dirty; before any file is modified (named `{jira_id}-GHAS-{primary_package}[-and-N-more]`)
-3. **`w2-planner`** (Sub-Agent 2) — scans source files to find which vulnerable packages are actually imported; generates CHANGE_PLAN with proposed `pom.xml` diff and breakage risk; supports re-planning when user gives feedback (**Plan Revision counter**, max per `retry_limits.plan_revision_max`)
-4. **User approves plan** — checks `auto_approve_minor`/`auto_approve_critical` flags first (auto-skips manual review if triggered); otherwise **uses `ask_user`** to pause: approve / feedback+re-plan / abort; on approval all planned fixes proceed to implementation; abort → delete feature branch, no changes
-5. **`w2-fixer`** (Sub-Agent 3) **+ `w2-validator`** (Sub-Agent 4) **loop** — fixer applies all planned fixes; CRITICAL first; property-backed preferred; uses the `Declared in:` file path from CONTEXT_MAP per fix; validator runs `dependency:tree` → `compile` → `mvn test` → smoke check; on failure captures FAILURE_CONTEXT and loops back — **never reverts anything**; on exceeding `retry_limits.build_failure_max` build failures offers **partial-fix commit** or full escalation (**Build Failure counter**)
-6. **`w2-verifier`** (Sub-Agent 5) — Jira cross-check via **`jira_ticket_manager.py get`** → CVE manifest validation → regression check → test coverage; outputs VERIFICATION_RESULT (passed/issues_found); on issues **resets `BUILD_FAILURE_ATTEMPTS` to 0** then loops back to fixer+validator (**Verify Fix counter**, max per `retry_limits.verify_fix_max`)
-7. **Verification loop** — issues found → re-runs fixer+validator+verifier; exceeding max → escalate
-8. **Human reviews implementation** — **uses `ask_user`** to pause: approve / request fixes / abort; on approval, stages **only modified `pom.xml` files** via `git diff --name-only` (NOT `git add -u`) **and commits them** (per updated user preference — commit now happens here, before Step 9, rather than being left to the user); fix requests pass review comments directly as FAILURE_CONTEXT and loop back through fixer + validator + verifier (**Review Fix counter**, max per `retry_limits.review_fix_max`)
-9. **`w2-reporter`** (Sub-Agent 6) — pushes branch, creates GitHub PR with four mandatory elements: (1) linked to Jira ticket, (2) summary of changes, (3) test results attached, (4) verified & ready for merge; posts report as Jira comment via **`jira_ticket_manager.py comment`**; transitions ticket via **`jira_ticket_manager.py transition`** (Done / In Review); writes a **workflow summary file** (`fix-reports/SECURITY_FIX_<ticket>_<timestamp>.md`) capturing: steps followed (timeline table), decisions made (plan approval + human review gates), issues encountered (build failure errors, verifier issues), and retry counters
+0. **Config + ticket validation** — loads `ghas-w2-config.yml`; confirms ticket ID matches project key via `jira_ticket_manager.py get`; resolves all sub-agent variables; aborts on failure.
+1. **`context-builder`** — fetches open alerts; discovers all `pom.xml` files (excludes `target/`); classifies each dependency as inline / property-backed / BOM-managed and records which file declares the version (`Declared in:` field in CONTEXT_MAP); audits sibling group consistency for `jjwt-*`, `log4j-*`, `jackson-*` across all pom files.
+2. **Feature branch created** — aborts if working tree is dirty; named `{jira_id}-GHAS-{primary_package}[-and-N-more]`.
+3. **`planner`** — scans source files to find which vulnerable packages are actually imported; generates CHANGE_PLAN with proposed `pom.xml` diff and breakage risk; supports re-planning when user gives feedback (**Plan Revision counter**).
+4. **User approves plan** — checks `auto_approve_minor`/`auto_approve_critical` flags first; otherwise pauses via `ask_user`: approve / feedback+re-plan / abort. Abort deletes the feature branch.
+5. **`fixer` + `validator` loop** — fixer applies fixes CRITICAL first; property-backed preferred; uses `Declared in:` file path from CONTEXT_MAP. Validator runs `dependency:tree` → `compile` → `mvn test` → smoke check. On exceeding `build_failure_max` failures, offers **partial-fix commit** or full escalation.
+6. **`verifier`** — Jira cross-check → CVE manifest validation → regression check → test coverage; issues found resets `BUILD_FAILURE_ATTEMPTS` to 0 and loops back to fixer+validator (**Verify Fix counter**).
+7. **Human reviews implementation** — pauses via `ask_user`; approve → stages **only modified `pom.xml` files** via `git diff --name-only` (NOT `git add -u`) and commits them before Step 9; fix requests pass review comments directly as FAILURE_CONTEXT (**Review Fix counter**).
+8. **`reporter`** — pushes branch, creates GitHub PR with: (1) Jira link, (2) change summary, (3) test results, (4) verified-ready-to-merge note; posts Jira comment; transitions ticket (Done / In Review); writes `fix-reports/SECURITY_FIX_<ticket>_<timestamp>.md`.
 
-Fix strategy rules: property-backed → update `<properties>` only (preferred); inline → update `<version>` directly; BOM-managed → skip, noted in report.
+**Retry escalation:**
+
+| Counter | Config key | Escalation message |
+|---|---|---|
+| Plan revisions | `retry_limits.plan_revision_max` | "Too many plan revision cycles — escalate to team" |
+| Build failures | `retry_limits.build_failure_max` | "Too many build failures — escalate to engineer" |
+| Verify fix cycles | `retry_limits.verify_fix_max` | "Verification keeps failing — manual code review required" |
+| Review fix cycles | `retry_limits.review_fix_max` | "Too many review fix cycles — reassign task" |
+
+**Fix strategy rules:**
+- Property-backed (`${some.version}`) → update `<properties>` block only — one change covers all usages (preferred).
+- Inline `<version>` → update directly.
+- BOM-managed (no `<version>` tag) → skip, noted in report.
+- Sibling groups (`jjwt-*`, `log4j-*`, `jackson-*`) must always share the same version — when fixing one artifact, update all siblings.
 
 ### Dependabot Schedule
 

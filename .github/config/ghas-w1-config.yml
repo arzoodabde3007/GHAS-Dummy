@@ -57,7 +57,7 @@ jira:
   story_points: null                # Story points for new tickets (set to null if field not on screen)
   team: null                        # Team name, or null to leave blank
   priority: High                    # Ticket priority — set by business, not mapped per severity
-  issue_type: Bug                   # Jira issue type (Bug / Task / Story / Security Finding)
+  issue_type: Task                  # Jira issue type (Bug / Task / Story / Security Finding)
 
   # Template for the ticket summary (title) line.
   # Placeholders: {service_name}  {severity_summary}  (e.g. "Critical-2, High-5, Medium-3, Low-1")
@@ -105,7 +105,7 @@ csv:
 # --------------------------------------------------------------
 services:
   - name: HMS                       # Service display name (used in Jira labels and CSV)
-    github_repo: HMS                # GitHub repository name (may differ from service name)
+    github_repo: GHAS-Dummy         # GitHub repository name (may differ from service name)
 
 
 # --------------------------------------------------------------

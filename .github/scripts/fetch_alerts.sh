@@ -1,16 +1,35 @@
 #!/bin/sh
 set -eu
 
-# Default path (Windows Git Bash format)
-DEFAULT_OUT_PATH="/c/MCKC-OPS/GHAS-ISSUES/github-issues.csv"
+# ==============================================================
+# fetch_alerts.sh — GHAS Workflow 1 Alert Fetcher
+# --------------------------------------------------------------
+# Usage: fetch_alerts.sh [output_dir] [owner]
+#   output_dir  Directory to write the CSV into (default: current dir).
+#   owner       GitHub owner/org that hosts the repositories below
+#               (default: mckesson).
+#
+# Writes a single timestamped file github_alerts_<timestamp>.csv
+# (matches csv.glob_pattern in ghas-w1-config.yml) containing the
+# open Dependabot, Code Scanning, and Secret Scanning alerts for
+# every repository in the REPOS list below.
+# ==============================================================
 
-if [ "$#" -gt 1 ]; then
-  echo "Usage: $0 [output.csv]" >&2
+# Default GitHub owner/org for production repositories.
+DEFAULT_OWNER="mckesson"
+
+if [ "$#" -gt 2 ]; then
+  echo "Usage: $0 [output_dir] [owner]" >&2
   exit 2
 fi
 
-out_path="${1:-$DEFAULT_OUT_PATH}"
-mkdir -p "$(dirname "$out_path")"
+out_dir="${1:-.}"
+OWNER="${2:-$DEFAULT_OWNER}"
+
+mkdir -p "$out_dir"
+
+timestamp="$(date +%Y%m%d_%H%M%S)"
+out_path="${out_dir%/}/github_alerts_${timestamp}.csv"
 
 printf '%s\n' 'service,type,ghsa_id,cve_id,title,severity,created,due,url,Application,nonCompliant,ageDays' > "$out_path"
 
@@ -18,19 +37,30 @@ _gh_out=$(mktemp)
 _gh_err=$(mktemp)
 trap 'rm -f "$_gh_out" "$_gh_err"' EXIT
 
-for entry in \
-  "HMS HMS" \
-  ; do
+# --------------------------------------------------------------
+# REPOS — production repositories to scan (single source of truth).
+# Format: "<repo_name> <application_label>"
+# --------------------------------------------------------------
+REPOS='
+GHAS-Dummy HMS
+'
+
+_gh_out=$(mktemp)
+_gh_err=$(mktemp)
+trap 'rm -f "$_gh_out" "$_gh_err"' EXIT
+
+printf '%s\n' "$REPOS" | while IFS= read -r entry; do
+  [ -z "$entry" ] && continue
 
   svc="${entry%% *}"
   Application="${entry#* }"
 
-  echo "Fetching alerts for service: $svc" >&2
+  echo "Fetching alerts for service: $svc (owner: $OWNER)" >&2
 
   # =======================
   # Dependabot
   # =======================
-  if gh api "repos/tanishq-sh17/${svc}/dependabot/alerts?state=open&per_page=100" --paginate \
+  if gh api "repos/${OWNER}/${svc}/dependabot/alerts?state=open&per_page=100" --paginate \
     --jq '.[] |
       .created_at as $created |
       (.security_advisory.severity // "") as $s |
@@ -64,7 +94,7 @@ for entry in \
   # =======================
   # Code Scanning
   # =======================
-  if gh api "repos/tanishq-sh17/${svc}/code-scanning/alerts?state=open&per_page=100" --paginate \
+  if gh api "repos/${OWNER}/${svc}/code-scanning/alerts?state=open&per_page=100" --paginate \
     --jq '.[] |
       .created_at as $created |
       ((.rule.security_severity_level // .rule.severity // .severity //"") | ascii_downcase) as $s |
@@ -90,7 +120,7 @@ for entry in \
   # =======================
   # Secret Scanning
   # =======================
-  if gh api "repos/tanishq-sh17/${svc}/secret-scanning/alerts?state=open&per_page=100" --paginate \
+  if gh api "repos/${OWNER}/${svc}/secret-scanning/alerts?state=open&per_page=100" --paginate \
     --jq '.[] |
       .created_at as $created |
       ((.severity // .rule.severity //"") | ascii_downcase) as $s |
@@ -115,4 +145,14 @@ for entry in \
 
 done
 
+# Full set of repositories that were scanned (regardless of alert count),
+# used by the orchestrator to close resolved tickets for zero-alert repos.
+scanned_services="$(printf '%s\n' "$REPOS" | while IFS= read -r entry; do
+  [ -z "$entry" ] && continue
+  printf '%s,' "${entry%% *}"
+done)"
+scanned_services="${scanned_services%,}"
+
 printf '%s\n' "Wrote CSV to: $out_path"
+printf 'CSV_PATH=%s\n' "$out_path"
+printf 'SCANNED_SERVICES=%s\n' "$scanned_services"

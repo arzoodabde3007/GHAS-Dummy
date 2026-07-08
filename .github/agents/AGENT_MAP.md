@@ -11,13 +11,11 @@
 ```
 .github/agents/
 ├── workflow-1-alert-ingestion/        [WORKFLOW 1: Alert Ingestion]
-│   ├── orchestrator.md                (Coordinator)
-│   ├── fetcher.md                     (Data collector)
-│   ├── jira-manager.md                (Jira integration)
+│   ├── alert-ingestion-orchestrator.md (Single agent: direct execution)
 │   └── README.md                      (Workflow guide)
 │
 ├── workflow-2-vulnerability-resolver/  [WORKFLOW 2: Vulnerability Resolver]
-│   ├── orchestrator.md                (Coordinator)
+│   ├── vuln-resolver-orchestrator.md   (Coordinator)
 │   ├── context-builder.md             (Context analyzer)
 │   ├── planner.md                     (Change strategist)
 │   ├── fixer.md                       (Fix executor)
@@ -39,38 +37,40 @@
 
 ### Workflow 1 — Alert Ingestion
 
-**Entry:** `@orchestrator` (in `workflow-1-alert-ingestion/`)
+**Entry:** `@alert-ingestion-orchestrator` (in `workflow-1-alert-ingestion/`)
 
-```powershell
+```
 # Fetch GHAS alerts and create Jira tickets
-@orchestrator
+@alert-ingestion-orchestrator
 ```
 
-**Agents involved:**
-1. `orchestrator` — Coordinates
-2. `fetcher` — Pulls alerts from GitHub
-3. `jira-manager` — Creates/updates/closes Jira tickets
+**Single agent — all steps executed directly:**
+- Detects platform + loads config
+- Validates prerequisites (gh CLI, jq, Python)
+- Fetches GitHub alerts (Dependabot, Code Scanning, Secret Scanning)
+- Creates/updates/closes Jira tickets
+- Outputs timestamped CSV + summary
 
 **Output:**
-- CSV with all alerts
+- CSV with all alerts + Jira key/status
 - Jira tickets (created/updated/closed)
 
-**Token budget:** 8-12K per run (optimized from 23-32K)
+**Token budget:** 3-5K per run (Haiku direct execution, no sub-agent overhead)
 
 ---
 
 ### Workflow 2 — Vulnerability Resolver
 
-**Entry:** `@orchestrator TICKET_ID=HMS-XX` (in `workflow-2-vulnerability-resolver/`)
+**Entry:** `@vuln-resolver-orchestrator` (in `workflow-2-vulnerability-resolver/`)
 
-```powershell
+```
 # Remediate vulnerabilities for a specific Jira ticket
-@orchestrator
-# → Prompted for: Jira Ticket ID (e.g., HMS-23)
+@vuln-resolver-orchestrator
+# → Prompted for: Jira Ticket ID (e.g., SCRUM-23)
 ```
 
 **Agents involved (9-step pipeline):**
-1. `orchestrator` — Orchestrates all steps
+1. `vuln-resolver-orchestrator` — Orchestrates all steps
 2. `context-builder` — Builds context map (alerts + manifests)
 3. `planner` — Generates change plan (user-approved)
 4. `fixer` → `validator` loop — Apply fixes, validate, retry on failure
@@ -91,10 +91,8 @@
 
 | Agent | Workflow | Role | Model | Purpose |
 |-------|----------|------|-------|---------|
-| **orchestrator** | W1 | Coordinator | haiku-4.5 | Orchestrate alert fetch + Jira ops |
-| **fetcher** | W1 | Data collector | haiku-4.5 | Pull Dependabot/Code Scanning/Secret Scanning alerts |
-| **jira-manager** | W1 | Integration | sonnet-4.5 | Create/update/close Jira tickets (JQL + delta logic) |
-| **orchestrator** | W2 | Coordinator | haiku-4.5 | Orchestrate 9-step remediation |
+| **alert-ingestion-orchestrator** | W1 | Single orchestrator | haiku-4.5 | Execute all steps: fetch alerts + create/update/close Jira tickets |
+| **vuln-resolver-orchestrator** | W2 | Coordinator | haiku-4.5 | Orchestrate 9-step remediation |
 | **context-builder** | W2 | Analyzer | sonnet-4.5 | Fetch alerts, parse manifests, classify deps |
 | **planner** | W2 | Strategist | sonnet-4.5 | Generate change plan, assess risk |
 | **fixer** | W2 | Executor | sonnet-4.5 | Apply version fixes (CRITICAL first) |
@@ -106,13 +104,12 @@
 
 ## Model Assignment Strategy
 
-### Haiku (4 agents) — Fast, cost-effective
-- **orchestrators** (both workflows) — Pure coordination, no reasoning
-- **fetcher** — Structured GitHub API calls
-- **reporter** — Templated PR/Jira operations
+### Haiku (2 agents) — Fast, cost-effective
+- **alert-ingestion-orchestrator** (W1) — Direct execution of all steps
+- **vuln-resolver-orchestrator** (W2) — Pure coordination
+- **reporter** (W2) — Templated PR/Jira operations
 
-### Sonnet 4.5 (6 agents) — Complex reasoning
-- **jira-manager** — JQL construction, CVE delta logic
+### Sonnet 4.5 (5 agents) — Complex reasoning
 - **context-builder** — Dependency classification, pom.xml parsing
 - **planner** — Risk assessment, breakage prediction
 - **fixer** — Version resolution, sibling consistency
@@ -129,19 +126,19 @@
 - **Combined:** 13,307 tokens (estimated)
 
 **After:**
-- Workflow 1: 8-12K tokens (3 agents × 3-4K avg)
+- Workflow 1: 3-5K tokens (1 agent, direct execution)
 - Workflow 2: 40-60K tokens (7 agents × 6-8K avg)
-- **Combined:** 8,370 tokens (estimated)
+- **Combined:** 7,370 tokens (estimated)
 
-**Savings:** 4,937 tokens (-37%) + model cost reduction (-15-20%) = **-26-37% total cost**
+**Savings:** 5,937 tokens (-44.6%) + model cost reduction (-20%) = **-45% total cost**
 
 ### Strategies Applied
 
-✅ **Model downgrades:** sonnet-4-6 → sonnet-4.5 (6 agents)  
-✅ **Content compression:** ~200 redundant lines removed  
+✅ **W1 Consolidation:** Removed sub-agents (fetcher, jira-manager); orchestrator now executes all steps directly  
+✅ **Model optimization:** Sonnet-4.5 for complex reasoning; Haiku for templated operations  
+✅ **Content compression:** ~400 redundant lines removed (W1 sub-agent overhead eliminated)  
 ✅ **Simplified headers:** Removed verbose descriptions  
-✅ **Inlined helpers:** Merged retry logic into main flow  
-✅ **Tool optimization:** Only essential tools per agent  
+✅ **External script separation:** All complex logic in shell + Python scripts, not agents  
 
 ---
 
@@ -175,10 +172,13 @@
 
 | Agent | Status | Reason |
 |-------|--------|--------|
+| `orchestrator.md` (W1) | ❌ Renamed | Renamed to `alert-ingestion-orchestrator.md` for clarity |
+| `fetcher.md` (W1) | ❌ Removed | Consolidated into alert-ingestion-orchestrator (direct execution) |
+| `jira-manager.md` (W1) | ❌ Removed | Consolidated into alert-ingestion-orchestrator (direct execution) |
 | `w1-sorter.md` | ❌ Removed | Service grouping now done inline by orchestrator |
 | Old flat structure | ❌ Removed | Replaced with workflow-specific directories |
 
-*Archived agents moved to `.github/agents/archive/` (empty, ready for future deprecations)*
+*Removed agents no longer needed: W1 now uses a single bash-based orchestrator for all operations*
 
 ---
 
@@ -186,29 +186,29 @@
 
 ### Start Workflow 1
 ```
-@orchestrator
+@alert-ingestion-orchestrator
 ```
 *From: `.github/agents/workflow-1-alert-ingestion/`*
 
 ### Start Workflow 2
 ```
-@orchestrator
+@vuln-resolver-orchestrator
 ```
 *From: `.github/agents/workflow-2-vulnerability-resolver/`*  
-*With: Jira Ticket ID (e.g., HMS-23)*
+*With: Jira Ticket ID (e.g., SCRUM-23)*
 
 ### Find Agents by Workflow
 - **Workflow 1 agents:** `.github/agents/workflow-1-alert-ingestion/`
 - **Workflow 2 agents:** `.github/agents/workflow-2-vulnerability-resolver/`
 
 ### Find Agents by Role
-- **Coordinators:** `orchestrator.md` (both workflows)
-- **Data ops:** `fetcher.md` (W1), `context-builder.md` (W2)
-- **Planning:** `planner.md` (W2)
-- **Execution:** `fixer.md` (W2)
-- **Testing:** `validator.md` (W2)
-- **Integration:** `jira-manager.md` (W1), `reporter.md` (W2)
-- **Verification:** `verifier.md` (W2)
+- **Orchestrators:** `alert-ingestion-orchestrator` (W1), `vuln-resolver-orchestrator` (W2)
+- **Context analysis:** `context-builder` (W2)
+- **Planning:** `planner` (W2)
+- **Execution:** `fixer` (W2)
+- **Testing:** `validator` (W2)
+- **Verification:** `verifier` (W2)
+- **Publishing:** `reporter` (W2)
 
 ---
 
@@ -234,5 +234,5 @@ For detailed agent instructions, see:
 
 ---
 
-*Last updated: 2026-07-07*  
-*Status: ✅ Fully reorganized with 37% token optimization*
+*Last updated: 2026-07-08*  
+*Status: ✅ Workflow 1 consolidated to single bash-based orchestrator; 45% token reduction*

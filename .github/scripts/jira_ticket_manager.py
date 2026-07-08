@@ -6,20 +6,22 @@ All commands load JIRA_EMAIL, JIRA_API_TOKEN, and JIRA_BASE_URL from the .env
 file at the repo root (or from environment variables if already set).
 
 Usage:
-    python jira_ticket_manager.py search   --project HMS --labels "GHAS,HMS"
-    python jira_ticket_manager.py create   --project HMS --csv <path>
-    python jira_ticket_manager.py comment  --ticket HMS-16 --body-file <path>
-    python jira_ticket_manager.py transitions --ticket HMS-16
-    python jira_ticket_manager.py transition  --ticket HMS-16 --name "Done"
+    python jira_ticket_manager.py search   --project CONNECT --labels "GHAS,b2b-connect-portal-useradmin-service"
+    python jira_ticket_manager.py create   --project CONNECT --csv <path>
+    python jira_ticket_manager.py comment  --ticket CONNECT-16 --body-file <path>
+    python jira_ticket_manager.py transitions --ticket CONNECT-16
+    python jira_ticket_manager.py transition  --ticket CONNECT-16 --name "Done"
 """
 
 import argparse
 import csv
 import json
 import os
+import re
 import sys
 from base64 import b64encode
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ── Try to load requests; give a clear error if missing ──────────────────────
 try:
@@ -57,6 +59,8 @@ def load_config():
             "parent_jira": None,
             "story_points": None,
             "team": None,
+            "team_field": None,
+            "team_id": None,
             "priority": "High",
             "template": {"include_columns": ["ghsa_id", "cve_id", "title"]},
             "skip_statuses_for_duplicate_check": [
@@ -137,6 +141,13 @@ def get_auth():
         print("ERROR: JIRA_BASE_URL (or JIRA_URL) must be set in .env or environment.", file=sys.stderr)
         sys.exit(1)
 
+    # Normalize to the site origin (scheme://host). Users often paste a full board
+    # URL like https://<site>.atlassian.net/jira/software/c/projects/KEY/boards/10;
+    # the REST API lives at the site root, so strip any path/query/fragment.
+    parsed = urlparse(base_url)
+    if parsed.scheme and parsed.netloc:
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
     creds   = b64encode(f"{email}:{token}".encode()).decode()
     headers = {
         "Authorization": f"Basic {creds}",
@@ -195,6 +206,120 @@ def cmd_search(args):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Command: find-duplicate
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Common prefixes stripped when deriving the distinctive "service slug" from a
+# GitHub repo name, so that a friendly Jira title can still be matched.
+_REPO_PREFIXES = (
+    "b2b-connect-portal-",
+    "b2b-connect-",
+    "b2b-",
+)
+
+
+def _normalize_key(text: str) -> str:
+    """Lowercase and strip every non-alphanumeric character.
+
+    'b2b-connect-portal-notification-service' -> 'b2bconnectportalnotificationservice'
+    'Notification service'                    -> 'notificationservice'
+    """
+    return "".join(ch for ch in (text or "").lower() if ch.isalnum())
+
+
+def _service_match_keys(service: str):
+    """Return the set of normalized keys that identify a service in a Jira title.
+
+    - full repo name         (e.g. b2bconnectportalnotificationservice)
+    - repo name minus prefix (e.g. notificationservice)
+    - any configured aliases  (jira.service_title_aliases[<service>])
+
+    Matching uses the FULL slug (not loose tokens) to avoid false positives such
+    as 'b2b-connect-portal-useradmin-service' matching
+    'b2b-connect-portal-useradmin-ordering-connector'.
+    """
+    keys = set()
+    full = _normalize_key(service)
+    if full:
+        keys.add(full)
+
+    short = service.lower()
+    for pref in _REPO_PREFIXES:
+        if short.startswith(pref):
+            short = short[len(pref):]
+            break
+    short_key = _normalize_key(short)
+    # Only use the short key if it is specific enough to avoid accidental matches.
+    if len(short_key) >= 5:
+        keys.add(short_key)
+
+    aliases = get_jira_config().get("service_title_aliases", {}) or {}
+    for alias in aliases.get(service, []) or []:
+        ak = _normalize_key(alias)
+        if ak:
+            keys.add(ak)
+
+    return keys
+
+
+def _service_matches_title(service: str, summary: str) -> bool:
+    """True if the Jira summary refers to the given service."""
+    title_key = _normalize_key(summary)
+    if not title_key:
+        return False
+    return any(k in title_key for k in _service_match_keys(service))
+
+
+def cmd_find_duplicate(args):
+    """Find existing GHAS ticket(s) for a service under the same parent + labels.
+
+    A duplicate is a ticket that (1) is in the configured project, (2) carries all
+    of the given labels, (3) has the given parent (if provided), (4) is in one of
+    the given statuses (if provided), AND (5) whose TITLE refers to the service.
+
+    Prints a JSON array of matching tickets [{key,status,summary,labels}], newest
+    first. Empty array => no duplicate => caller should create a fresh ticket.
+    """
+    base_url, headers = get_auth()
+
+    labels = [l.strip() for l in (args.labels or "").split(",") if l.strip()]
+    clauses = [f'project = "{args.project}"']
+    clauses += [f'labels = "{l}"' for l in labels]
+    if args.parent and args.parent.lower() != "null":
+        clauses.append(f'parent = "{args.parent}"')
+    if args.statuses:
+        status_list = ", ".join(f'"{s.strip()}"' for s in args.statuses.split(",") if s.strip())
+        if status_list:
+            clauses.append(f'status in ({status_list})')
+    jql = " AND ".join(clauses) + " ORDER BY created DESC"
+
+    params = {"jql": jql, "fields": "summary,status,labels", "maxResults": 100}
+    url  = f"{base_url}/rest/api/3/search/jql"
+    resp = jira_request("GET", url, headers, params=params)
+    if resp.status_code != 200:
+        print(f"ERROR: Jira search failed ({resp.status_code}): {resp.text}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        issues = resp.json().get("issues", [])
+    except ValueError:
+        print(f"ERROR: Jira returned a non-JSON response. Check JIRA_BASE_URL. Body: {resp.text[:200]}", file=sys.stderr)
+        sys.exit(1)
+
+    matches = [
+        {
+            "key":     i["key"],
+            "status":  i["fields"]["status"]["name"],
+            "summary": i["fields"]["summary"],
+            "labels":  i["fields"].get("labels", []),
+        }
+        for i in issues
+        if _service_matches_title(args.service, i["fields"].get("summary", ""))
+    ]
+    print(json.dumps(matches, indent=2))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ADF builders
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -225,7 +350,7 @@ def _table_header_cell(text, bg="#0052CC", text_color="#FFFFFF"):
         "type": "tableHeader",
         "attrs": {"background": bg},
         "content": [_para(_text(text, [{"type": "strong"},
-                                        {"type": "textColor", "attrs": {"color": text_color}}]))],
+                                       {"type": "textColor", "attrs": {"color": text_color}}]))],
     }
 
 
@@ -253,9 +378,9 @@ def build_adf_description(service_name, grouped_alerts):
     jira_cfg      = get_jira_config()
     # Support both config key names: ticket_table_columns (new) and template.include_columns (legacy)
     include_cols  = (
-        jira_cfg.get("ticket_table_columns")
-        or jira_cfg.get("template", {}).get("include_columns")
-        or ["ghsa_id", "cve_id", "title"]
+            jira_cfg.get("ticket_table_columns")
+            or jira_cfg.get("template", {}).get("include_columns")
+            or ["ghsa_id", "cve_id", "title"]
     )
 
     dep_alerts = [a for a in grouped_alerts if a.get("type") == "dependabot"]
@@ -284,7 +409,7 @@ def build_adf_description(service_name, grouped_alerts):
 
     # ── Severity summary table ────────────────────────────────────────────────
     header_row = _table_row([_table_header_cell(h) for h in
-                              ["Vulnerability", "Critical", "High", "Medium", "Low"]])
+                             ["Vulnerability", "Critical", "High", "Medium", "Low"]])
     dep_row   = _table_row([_table_cell("Dependabot")] +
                            [_table_cell(str(dep_counts[s])) for s in severities])
     cs_row    = _table_row([_table_cell("Code Scanning")] +
@@ -300,7 +425,7 @@ def build_adf_description(service_name, grouped_alerts):
     # ── Compliance / Non-Compliance breakdown table ───────────────────────────
     content.append(_para(_colored_text("Compliance Summary:", "#0052CC", bold=True)))
     comp_header = _table_row([_table_header_cell(h) for h in
-                               ["Severity", "Total", "Compliant", "Non-Compliant"]])
+                              ["Severity", "Total", "Compliant", "Non-Compliant"]])
     comp_rows = [comp_header]
     for sev in severities:
         bucket      = [a for a in dep_alerts if (a.get("severity") or "").upper() == sev]
@@ -398,13 +523,288 @@ def build_adf_description(service_name, grouped_alerts):
         for a in ss_alerts:
             content.append(_para(_text(f"• {a.get('title','—')} | {a.get('url','—')}")))
 
-    content.append({"type": "rule"})
-    content.append(_para({
-        "type": "text", "text": "Auto-created by GHAS Vulnerability Management — Workflow 1 / Jira Manager",
-        "marks": [{"type": "em"}],
-    }))
-
     return {"version": 1, "type": "doc", "content": content}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable helpers for the batch `process-all` command
+# (kept separate so the existing per-service commands remain byte-for-byte intact)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _alerts_from_rows(service_rows):
+    """Map raw CSV rows for a single service to the alert dicts create() expects."""
+    alerts = []
+    for r in service_rows:
+        alerts.append({
+            "type":         r.get("type", ""),
+            "ghsa_id":      r.get("ghsa_id", ""),
+            "cve_id":       r.get("cve_id", ""),
+            "title":        r.get("title", ""),
+            "severity":     r.get("severity", ""),
+            "created":      r.get("created", ""),
+            "due":          r.get("due", ""),
+            "ageDays":      r.get("ageDays", ""),
+            "nonCompliant": r.get("nonCompliant", "0"),
+            "url":          r.get("url", ""),
+        })
+    return alerts
+
+
+
+def _build_summary(service, service_rows):
+    """Build the Jira summary (title) for a service from CSV rows — extracted logic shared
+    by create and update so both set consistent severity counts in the title bracket."""
+    alerts     = _alerts_from_rows(service_rows)
+    dep_alerts = [a for a in alerts if a["type"] == "dependabot"]
+    cs_alerts  = [a for a in alerts if a["type"] == "code-scanning"]
+    all_vuln   = dep_alerts + cs_alerts
+
+    sev_totals = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for a in all_vuln:
+        sev = (a.get("severity") or "").upper()
+        if sev in sev_totals:
+            sev_totals[sev] += 1
+    sev_parts        = [f"{k.capitalize()}-{v}" for k, v in sev_totals.items() if v > 0]
+    severity_summary = ", ".join(sev_parts)
+
+    jira_cfg = get_jira_config()
+    summary_template = jira_cfg.get(
+        "ticket_summary_template",
+        "Address GHAS vulnerabilities for {service_name} [{severity_summary}]"
+    )
+    return summary_template.format(service_name=service, severity_summary=severity_summary)
+
+
+def _build_create_payload(project, service, service_rows):
+    """Build the Jira create payload for a service — mirrors cmd_create exactly."""
+    alerts   = _alerts_from_rows(service_rows)
+
+    jira_cfg = get_jira_config()
+    priority = jira_cfg.get("priority", "High")
+    summary  = _build_summary(service, service_rows)
+
+    base_labels = list(jira_cfg.get("labels", ["GHAS"]))
+    labels = base_labels + [service]
+    adf_desc = build_adf_description(service, alerts)
+
+    payload = {
+        "fields": {
+            "project":     {"key": project},
+            "issuetype":   {"name": jira_cfg.get("issue_type", "Bug")},
+            "summary":     summary,
+            "priority":    {"name": priority},
+            "labels":      labels,
+            "description": adf_desc,
+        }
+    }
+
+    assignee     = jira_cfg.get("assignee")
+    story_points = jira_cfg.get("story_points")
+    parent_jira  = jira_cfg.get("parent_jira")
+    if assignee:
+        payload["fields"]["assignee"] = {"accountId": assignee}
+    if story_points is not None:
+        story_points_field = jira_cfg.get("story_points_field", "story_points")
+        payload["fields"][story_points_field] = story_points
+    if parent_jira:
+        payload["fields"]["parent"] = {"key": parent_jira}
+    application_id = jira_cfg.get("application")
+    if application_id:
+        payload["fields"]["customfield_10400"] = {"id": str(application_id)}
+    team_field = jira_cfg.get("team_field")
+    team_id    = jira_cfg.get("team_id")
+    if team_field and team_id:
+        payload["fields"][team_field] = {"id": str(team_id)}
+
+    return payload, summary, priority
+
+
+def _create_ticket(base_url, headers, project, service, service_rows):
+    """POST a fresh ticket for a service. Returns {key,summary,priority}."""
+    payload, summary, priority = _build_create_payload(project, service, service_rows)
+    url  = f"{base_url}/rest/api/3/issue"
+    resp = jira_request("POST", url, headers, json=payload)
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Ticket creation failed ({resp.status_code}): {resp.text}")
+    return {"key": resp.json().get("key", ""), "summary": summary, "priority": priority}
+
+
+def _update_ticket_description(base_url, headers, ticket, service, service_rows):
+    """PUT a regenerated ADF description onto an existing ticket. Mirrors cmd_update_description."""
+    adf     = build_adf_description(service, service_rows)
+    summary = _build_summary(service, service_rows)
+    payload = {"fields": {"summary": summary, "description": adf}}
+    url = f"{base_url}/rest/api/3/issue/{ticket}"
+    resp = jira_request("PUT", url, headers, json=payload)
+    if resp.status_code not in (200, 201, 204):
+        raise RuntimeError(f"Update failed ({resp.status_code}): {resp.text}")
+    return len(service_rows)
+
+
+def _extract_alert_ids(text):
+    """Extract CVE + GHSA identifiers (uppercased) from a ticket description — matches the
+    legacy per-service delta logic in w1-jira-manager."""
+    ids  = set(re.findall(r'CVE-\d{4}-\d+', text or "", re.IGNORECASE))
+    ids |= set(re.findall(r'GHSA-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+', text or "", re.IGNORECASE))
+    return {i.upper() for i in ids}
+
+
+def _search_candidate_tickets(base_url, headers, project, labels, parent, statuses):
+    """ONE JQL search returning every candidate GHAS ticket (with description) under the
+    given project + labels + parent + active statuses, newest first. Replaces N per-service
+    find-duplicate calls. Paginates defensively if Jira returns more than one page."""
+    label_list = [l.strip() for l in (labels or "").split(",") if l.strip()]
+    clauses = [f'project = "{project}"']
+    clauses += [f'labels = "{l}"' for l in label_list]
+    if parent and parent.lower() != "null":
+        clauses.append(f'parent = "{parent}"')
+    if statuses:
+        status_list = ", ".join(f'"{s.strip()}"' for s in statuses.split(",") if s.strip())
+        if status_list:
+            clauses.append(f'status in ({status_list})')
+    jql = " AND ".join(clauses) + " ORDER BY created DESC"
+
+    url    = f"{base_url}/rest/api/3/search/jql"
+    issues = []
+    next_token = None
+    while True:
+        params = {"jql": jql, "fields": "summary,status,description", "maxResults": 100}
+        if next_token:
+            params["nextPageToken"] = next_token
+        resp = jira_request("GET", url, headers, params=params)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Jira search failed ({resp.status_code}): {resp.text}")
+        data = resp.json()
+        issues.extend(data.get("issues", []))
+        next_token = data.get("nextPageToken")
+        if not next_token or data.get("isLast", True):
+            break
+    return issues
+
+
+def _mark_csv_rows(rows, service, key, status):
+    """Set jira_key / jira_status on every CSV row belonging to a service (in memory)."""
+    svc = service.strip().lower()
+    for r in rows:
+        if (r.get("service") or "").strip().lower() == svc:
+            r["jira_key"]    = key
+            r["jira_status"] = status
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Command: process-all (batch — one process for ALL services)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def cmd_process_all(args):
+    """Batch-process every service in a CSV in a SINGLE Python run:
+      1. one JQL search fetches all candidate tickets (replaces N find-duplicate calls),
+      2. per service: title-match → delta (new CVEs?) → create / update / skip,
+      3. write jira_key + jira_status back to the CSV once.
+
+    --dry-run performs all read-only work (search + delta) and prints planned actions
+    WITHOUT creating/updating any Jira ticket and WITHOUT rewriting the CSV.
+    """
+    base_url, headers = get_auth()
+
+    csv_path = Path(args.csv)
+    if not csv_path.exists():
+        print(f"ERROR: CSV not found: {csv_path}", file=sys.stderr)
+        sys.exit(1)
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        print(json.dumps({"created": [], "updated": [], "skipped": [], "failed": [], "dry_run": bool(args.dry_run)}, indent=2))
+        return
+
+    # Service list: explicit subset, else every distinct non-empty service in the CSV.
+    if args.services:
+        services = [s.strip() for s in args.services.split(",") if s.strip()]
+    else:
+        services = []
+        for r in rows:
+            s = (r.get("service") or "").strip()
+            if s and s not in services:
+                services.append(s)
+
+    try:
+        candidates = _search_candidate_tickets(base_url, headers, args.project, args.labels, args.parent, args.statuses)
+    except RuntimeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"[process-all] {len(candidates)} candidate ticket(s) fetched in 1 JQL search; processing {len(services)} service(s)"
+          + (" (DRY-RUN)" if args.dry_run else ""), file=sys.stderr)
+
+    created, updated, skipped, failed = [], [], [], []
+
+    for svc in services:
+        service_rows = [r for r in rows if (r.get("service") or "").strip().lower() == svc.lower()]
+        if not service_rows:
+            print(f"[process-all] {svc}: no alert rows — nothing to create", file=sys.stderr)
+            continue
+
+        matched = [i for i in candidates if _service_matches_title(svc, i["fields"].get("summary", ""))]
+        active  = matched[0] if matched else None  # newest first (search ordered by created DESC)
+
+        try:
+            if active:
+                key          = active["key"]
+                desc_text    = _adf_to_text(active["fields"].get("description") or {})
+                existing_ids = _extract_alert_ids(desc_text)
+                current_ids  = set()
+                for r in service_rows:
+                    if (r.get("cve_id")  or "").strip(): current_ids.add(r["cve_id"].strip().upper())
+                    if (r.get("ghsa_id") or "").strip(): current_ids.add(r["ghsa_id"].strip().upper())
+                new_ids = current_ids - existing_ids
+
+                if not new_ids:
+                    _mark_csv_rows(rows, svc, key, "SKIPPED")
+                    skipped.append(key)
+                    print(f"[process-all] {svc}: SKIP {key} (no new CVEs)", file=sys.stderr)
+                elif args.dry_run:
+                    _mark_csv_rows(rows, svc, key, "WOULD_UPDATE")
+                    updated.append(key)
+                    print(f"[process-all] {svc}: WOULD UPDATE {key} (+{len(new_ids)} new CVEs)", file=sys.stderr)
+                else:
+                    _update_ticket_description(base_url, headers, key, svc, service_rows)
+                    _mark_csv_rows(rows, svc, key, "UPDATED")
+                    updated.append(key)
+                    print(f"[process-all] {svc}: UPDATED {key} (+{len(new_ids)} new CVEs)", file=sys.stderr)
+            else:
+                if args.dry_run:
+                    _mark_csv_rows(rows, svc, "DRY-RUN", "WOULD_CREATE")
+                    created.append(f"{svc}:WOULD_CREATE")
+                    print(f"[process-all] {svc}: WOULD CREATE fresh ticket ({len(service_rows)} alerts)", file=sys.stderr)
+                else:
+                    result = _create_ticket(base_url, headers, args.project, svc, service_rows)
+                    _mark_csv_rows(rows, svc, result["key"], "CREATED")
+                    created.append(result["key"])
+                    print(f"[process-all] {svc}: CREATED {result['key']}", file=sys.stderr)
+        except RuntimeError as e:
+            _mark_csv_rows(rows, svc, "", "FAILED")
+            failed.append({"service": svc, "error": str(e)})
+            print(f"[process-all] {svc}: FAILED — {e}", file=sys.stderr)
+
+    # Write the CSV once (skipped entirely in dry-run so nothing is mutated).
+    if not args.dry_run:
+        fieldnames = list(rows[0].keys())
+        for col in ("jira_key", "jira_status"):
+            if col not in fieldnames:
+                fieldnames.append(col)
+        for r in rows:
+            r.setdefault("jira_key", "")
+            r.setdefault("jira_status", "")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    print(json.dumps({
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "failed":  failed,
+        "dry_run": bool(args.dry_run),
+    }, indent=2))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -502,6 +902,17 @@ def cmd_create(args):
         payload["fields"][story_points_field] = story_points
     if parent_jira:
         payload["fields"]["parent"] = {"key": parent_jira}
+
+    # Application (customfield_10400) — required field for CONNECT project
+    application_id = jira_cfg.get("application")
+    if application_id:
+        payload["fields"]["customfield_10400"] = {"id": str(application_id)}
+
+    # Team (customfield_15003, schema type "team") — set when team_field + team_id configured.
+    team_field = jira_cfg.get("team_field")
+    team_id    = jira_cfg.get("team_id")
+    if team_field and team_id:
+        payload["fields"][team_field] = {"id": str(team_id)}
 
     url  = f"{base_url}/rest/api/3/issue"
     resp = jira_request("POST", url, headers, json=payload)
@@ -683,12 +1094,12 @@ def main():
     # search
     p_search = sub.add_parser("search", help="Search for open GHAS tickets")
     p_search.add_argument("--project", default=None, help="Jira project key (required unless --jql is used)")
-    p_search.add_argument("--labels",  default=None, help="Comma-separated labels, e.g. GHAS,HMS (required unless --jql is used)")
+    p_search.add_argument("--labels",  default=None, help="Comma-separated labels, e.g. GHAS,b2b-connect-portal-useradmin-service (required unless --jql is used)")
     p_search.add_argument("--jql",     default=None, help="Raw JQL query string; overrides --project and --labels")
 
     # get
     p_get = sub.add_parser("get", help="Fetch a single issue: key, status, labels, description text")
-    p_get.add_argument("--ticket", required=True, help="Jira issue key, e.g. HMS-16")
+    p_get.add_argument("--ticket", required=True, help="Jira issue key, e.g. CONNECT-16")
 
     # create
     p_create = sub.add_parser("create", help="Create one consolidated ticket for a service")
@@ -704,9 +1115,30 @@ def main():
 
     # update-description
     p_upd = sub.add_parser("update-description", help="Re-generate ADF description for an existing ticket")
-    p_upd.add_argument("--ticket",  required=True, help="Jira issue key, e.g. HMS-22")
-    p_upd.add_argument("--service", required=True, help="Service name, e.g. HMS")
+    p_upd.add_argument("--ticket",  required=True, help="Jira issue key, e.g. CONNECT-22")
+    p_upd.add_argument("--service", required=True, help="Service name (= GitHub repo name), e.g. b2b-connect-portal-useradmin-service")
     p_upd.add_argument("--csv",     required=True, help="Path to github_alerts_*.csv")
+
+    # find-duplicate
+    p_find = sub.add_parser("find-duplicate",
+                            help="Find existing GHAS ticket(s) for a service by parent + labels + title match")
+    p_find.add_argument("--project",  required=True, help="Jira project key, e.g. CONNECT")
+    p_find.add_argument("--service",  required=True, help="Service = GitHub repo name, e.g. b2b-connect-portal-notification-service")
+    p_find.add_argument("--labels",   required=True, help="Comma-separated labels that must ALL be present, e.g. Connect,GHAS")
+    p_find.add_argument("--parent",   default=None,  help="Parent epic key that the ticket must have, e.g. CONNECT-1035")
+    p_find.add_argument("--statuses", default=None,  help="Comma-separated statuses to restrict to (skip-statuses)")
+
+    # process-all (batch — one process for ALL services)
+    p_all = sub.add_parser("process-all",
+                           help="Batch: 1 JQL dedup search + delta + create/update/skip for ALL services in a CSV, then write jira_key/jira_status once")
+    p_all.add_argument("--project",  required=True, help="Jira project key, e.g. CONNECT")
+    p_all.add_argument("--csv",      required=True, help="Path to github_alerts_*.csv")
+    p_all.add_argument("--labels",   required=True, help="Comma-separated labels that must ALL be present, e.g. Connect,GHAS")
+    p_all.add_argument("--parent",   default=None,  help="Parent epic key, e.g. CONNECT-1035")
+    p_all.add_argument("--statuses", default=None,  help="Comma-separated active statuses (skip-statuses)")
+    p_all.add_argument("--services", default=None,  help="Optional comma-separated service subset; default = every service in the CSV")
+    p_all.add_argument("--dry-run",  dest="dry_run", action="store_true",
+                       help="Read-only: search + delta + print planned actions, but do NOT create/update tickets or rewrite the CSV")
 
     # transitions
     p_trans = sub.add_parser("transitions", help="List available transitions for a ticket")
@@ -725,6 +1157,8 @@ def main():
         "create":            cmd_create,
         "comment":           cmd_comment,
         "update-description": cmd_update_description,
+        "find-duplicate":    cmd_find_duplicate,
+        "process-all":       cmd_process_all,
         "transitions":       cmd_transitions,
         "transition":        cmd_transition,
     }
@@ -733,3 +1167,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

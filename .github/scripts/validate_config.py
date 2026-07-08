@@ -91,8 +91,16 @@ def validate(config_path: str) -> bool:
     # ── Workflow 1 checks ─────────────────────────────────────────
     if workflow_type in ("w1", "both"):
         services = get_nested(cfg, "services")
-        if not services:
-            errors.append("  [MISSING] services — at least one service entry is required (W1)")
+        fetch_script = get_nested(cfg, "scripts.fetch_alerts")
+        # Two supported modes:
+        #   config-driven : `services` lists the repos to scan
+        #   script-driven : the repo list lives inside the fetch script
+        # Only fail when neither source of repositories is available.
+        if not services and not fetch_script:
+            errors.append(
+                "  [MISSING] services — provide a `services` list, or set "
+                "`scripts.fetch_alerts` for script-driven mode (W1)"
+            )
 
         valid_columns = {"ghsa_id", "cve_id", "title", "severity", "created", "due", "ageDays", "nonCompliant", "url"}
         ticket_table_columns = get_nested(cfg, "jira.ticket_table_columns")
@@ -149,9 +157,69 @@ def validate(config_path: str) -> bool:
     return True
 
 
+def get_value(config_path: str, key: str, sep: str = ",") -> int:
+    """Print a single config value by dot-notation key and exit.
+
+    Lists are joined with *sep* (default ',').
+    Returns 0 on success, 1 on error.
+    Prints an empty string (exit 0) when the key exists but is None / unset —
+    so callers can distinguish 'missing file' (exit 1) from 'key not set' (empty output).
+    """
+    if not os.path.isfile(config_path):
+        print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
+        return 1
+
+    with open(config_path, encoding="utf-8") as f:
+        try:
+            cfg = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            print(f"ERROR: Invalid YAML in {config_path}: {e}", file=sys.stderr)
+            return 1
+
+    if not cfg:
+        print("ERROR: Config file is empty.", file=sys.stderr)
+        return 1
+
+    value = get_nested(cfg, key)
+
+    if value is None:
+        print("")           # key not set — empty output, still success
+    elif isinstance(value, list):
+        print(sep.join(str(v) for v in value))
+    elif isinstance(value, bool):
+        print(str(value).lower())
+    else:
+        print(str(value).strip())
+
+    return 0
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python validate_config.py <config.yml>", file=sys.stderr)
+        print(
+            "Usage:\n"
+            "  python validate_config.py <config.yml>\n"
+            "  python validate_config.py <config.yml> --get KEY [--sep SEP]",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    ok = validate(sys.argv[1])
+
+    config_path = sys.argv[1]
+
+    # ── --get mode: print a single config value ───────────────────
+    if "--get" in sys.argv:
+        idx = sys.argv.index("--get")
+        if idx + 1 >= len(sys.argv):
+            print("ERROR: --get requires a KEY argument", file=sys.stderr)
+            sys.exit(1)
+        key = sys.argv[idx + 1]
+        sep = ","
+        if "--sep" in sys.argv:
+            sep_idx = sys.argv.index("--sep")
+            if sep_idx + 1 < len(sys.argv):
+                sep = sys.argv[sep_idx + 1]
+        sys.exit(get_value(config_path, key, sep))
+
+    # ── Normal validation mode ────────────────────────────────────
+    ok = validate(config_path)
     sys.exit(0 if ok else 1)
