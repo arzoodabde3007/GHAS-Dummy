@@ -16,11 +16,9 @@
 │
 ├── workflow-2-vulnerability-resolver/  [WORKFLOW 2: Vulnerability Resolver]
 │   ├── vuln-resolver-orchestrator.md   (Coordinator)
-│   ├── context-builder.md             (Context analyzer)
 │   ├── planner.md                     (Change strategist)
 │   ├── fixer.md                       (Fix executor)
-│   ├── validator.md                   (Build/test validator)
-│   ├── verifier.md                    (QA verifier)
+│   ├── validator.md                   (Build/test/CVE validator)
 │   ├── reporter.md                    (PR/Jira publisher)
 │   └── README.md                      (Workflow guide)
 │
@@ -69,13 +67,11 @@
 # → Prompted for: Jira Ticket ID (e.g., SCRUM-23)
 ```
 
-**Agents involved (9-step pipeline):**
+**Agents involved (7-step pipeline):**
 1. `vuln-resolver-orchestrator` — Orchestrates all steps
-2. `context-builder` — Builds context map (alerts + manifests)
-3. `planner` — Generates change plan (user-approved)
-4. `fixer` → `validator` loop — Apply fixes, validate, retry on failure
-5. `verifier` → `fixer+validator` loop — Verify, re-run on issues
-6. `reporter` — Create PR, post Jira, transition, write summary
+2. `planner` — Generates change plan (user-approved)
+3. `fixer` → `validator` loop — Apply fixes, validate (build + CVE cross-check), retry on failure
+4. `reporter` — Create PR, post Jira, transition, write summary
 
 **Output:**
 - Feature branch with fixes
@@ -92,12 +88,10 @@
 | Agent | Workflow | Role | Model | Purpose |
 |-------|----------|------|-------|---------|
 | **alert-ingestion-orchestrator** | W1 | Single orchestrator | haiku-4.5 | Execute all steps: fetch alerts + create/update/close Jira tickets |
-| **vuln-resolver-orchestrator** | W2 | Coordinator | haiku-4.5 | Orchestrate 9-step remediation |
-| **context-builder** | W2 | Analyzer | sonnet-4.5 | Fetch alerts, parse manifests, classify deps |
+| **vuln-resolver-orchestrator** | W2 | Coordinator | haiku-4.5 | Orchestrate 7-step remediation |
 | **planner** | W2 | Strategist | sonnet-4.5 | Generate change plan, assess risk |
 | **fixer** | W2 | Executor | sonnet-4.5 | Apply version fixes (CRITICAL first) |
-| **validator** | W2 | Tester | sonnet-4.5 | Validate: compile, test, smoke check |
-| **verifier** | W2 | QA | sonnet-4.5 | Verify CVEs addressed, no regressions |
+| **validator** | W2 | Tester + Verifier | sonnet-4.5 | Build, test, smoke check, CVE cross-check, sibling group consistency |
 | **reporter** | W2 | Publisher | haiku-4.5 | Create PR, post Jira, transition ticket |
 
 ---
@@ -109,12 +103,10 @@
 - **vuln-resolver-orchestrator** (W2) — Pure coordination
 - **reporter** (W2) — Templated PR/Jira operations
 
-### Sonnet 4.5 (5 agents) — Complex reasoning
-- **context-builder** — Dependency classification, pom.xml parsing
+### Sonnet 4.5 (3 agents) — Complex reasoning
 - **planner** — Risk assessment, breakage prediction
 - **fixer** — Version resolution, sibling consistency
-- **validator** — Build error diagnostics
-- **verifier** — CVE manifest cross-check, regression detection
+- **validator** — Build error diagnostics, CVE cross-check, sibling group consistency
 
 ---
 
@@ -176,9 +168,11 @@
 | `fetcher.md` (W1) | ❌ Removed | Consolidated into alert-ingestion-orchestrator (direct execution) |
 | `jira-manager.md` (W1) | ❌ Removed | Consolidated into alert-ingestion-orchestrator (direct execution) |
 | `w1-sorter.md` | ❌ Removed | Service grouping now done inline by orchestrator |
+| `context-builder.md` (W2) | ❌ Removed | Context built inline by orchestrator Step 0 |
+| `verifier.md` (W2) | ❌ Removed | CVE cross-check + sibling consistency folded into validator |
 | Old flat structure | ❌ Removed | Replaced with workflow-specific directories |
 
-*Removed agents no longer needed: W1 now uses a single bash-based orchestrator for all operations*
+*Removed agents no longer needed: W1 consolidated to single orchestrator; W2 verifier merged into validator*
 
 ---
 
@@ -203,11 +197,9 @@
 
 ### Find Agents by Role
 - **Orchestrators:** `alert-ingestion-orchestrator` (W1), `vuln-resolver-orchestrator` (W2)
-- **Context analysis:** `context-builder` (W2)
 - **Planning:** `planner` (W2)
 - **Execution:** `fixer` (W2)
 - **Testing:** `validator` (W2)
-- **Verification:** `verifier` (W2)
 - **Publishing:** `reporter` (W2)
 
 ---
